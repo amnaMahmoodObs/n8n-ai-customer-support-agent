@@ -1,0 +1,588 @@
+{
+  "name": "Customer Support Agent - AI Classification & Auto-Response",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "readStatus": "unread"
+        }
+      },
+      "id": "7c87a44d-994b-493a-a78b-e92ecc466ba5",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1440,
+        1264
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "M2bUyP47VQYCuDiQ",
+          "name": "Gmail account 2"
+        }
+      },
+      "notes": "Monitors inbox for new support emails. Configure filter 'to:support@yourcompany.com' for production use."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "email_id",
+              "name": "email_id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "thread_id",
+              "name": "thread_id",
+              "value": "={{ $json.threadId }}",
+              "type": "string"
+            },
+            {
+              "id": "sender_email",
+              "name": "sender_email",
+              "value": "={{ $json.From.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/)[0] }}",
+              "type": "string"
+            },
+            {
+              "id": "sender_name",
+              "name": "sender_name",
+              "value": "={{ $json.From.replace(/<.*>/, '').trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "subject",
+              "name": "subject",
+              "value": "={{ $json.Subject }}",
+              "type": "string"
+            },
+            {
+              "id": "body",
+              "name": "body",
+              "value": "={{ $json.textPlain || $json.snippet || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "received_at",
+              "name": "received_at",
+              "value": "={{ new Date(parseInt($json.internalDate)).toLocaleString() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a809cfc4-26a5-475b-a645-b497eec1c968",
+      "name": "Extract Email Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1392,
+        1488
+      ],
+      "notes": "Normalizes email data for consistent processing downstream."
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert customer support analyst. Analyze the following support email and provide a structured JSON response.\n\nClassify the email into exactly ONE category, assess sentiment, determine urgency, and evaluate complexity.\n\nRespond ONLY with valid JSON in this exact format:\n{\n  \"category\": \"<one of: Billing, Technical, Feature_Request, General_Inquiry, Complaint>\",\n  \"sentiment\": \"<one of: Positive, Neutral, Negative>\",\n  \"urgency\": \"<one of: Low, Medium, High, Urgent>\",\n  \"complexity\": \"<one of: Simple, Moderate, Complex>\",\n  \"key_issues\": [\"<issue 1>\", \"<issue 2>\"],\n  \"customer_emotion\": \"<brief description of customer's emotional state>\",\n  \"requires_escalation\": <true or false>,\n  \"escalation_reason\": \"<reason if escalation needed, or null>\",\n  \"suggested_priority\": <1-5 where 1 is highest>,\n  \"brief_summary\": \"<2-3 sentence summary of the request>\"\n}\n\nEscalation Criteria - Set requires_escalation to TRUE if ANY:\n- Sentiment is Negative\n- Urgency is High or Urgent\n- Complexity is Complex\n- Category is Complaint\n- Customer mentions legal action, cancellation, or switching to competitor\n- Issue involves data loss, security concerns, or financial impact\n\nSet requires_escalation to FALSE only if ALL:\n- Sentiment is Positive or Neutral\n- Urgency is Low or Medium\n- Complexity is Simple or Moderate\n- Category is General_Inquiry or simple Technical/Billing question"
+            },
+            {
+              "content": "=Analyze this support email:\n\n---\nFrom: {{ $json.sender_name }} <{{ $json.sender_email }}>\nSubject: {{ $json.subject }}\nReceived: {{ $json.received_at }}\n\nMessage:\n{{ $json.body }}\n---"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 1000,
+          "temperature": 0.1
+        }
+      },
+      "id": "7935325a-c5cd-488f-aebc-0b87460cbd2d",
+      "name": "Classify & Analyze Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        -1184,
+        1360
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "zAeOD8wpMdfSxQVE",
+          "name": "OpenAi account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Analyzes email for category, sentiment, urgency, and complexity. Returns structured JSON."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI classification response and prepare routing data\nconst results = [];\n\nfor (const item of $input.all()) {\n  const emailData = $('Extract Email Data').first().json;\n  let analysis;\n  \n  try {\n    // Handle OpenAI v2.1 Responses API nested format\n    let aiResponse = item.json.output;\n    \n    // If output is an array (v2.1 format), extract the text\n    if (Array.isArray(aiResponse)) {\n      aiResponse = aiResponse[0]?.content?.[0]?.text || aiResponse[0]?.text;\n    }\n    \n    // If still not found, try other common paths\n    if (!aiResponse) {\n      if (item.json.content && Array.isArray(item.json.content)) {\n        aiResponse = item.json.content[0]?.text;\n      } else {\n        aiResponse = item.json.content || item.json.text || item.json.message?.content;\n      }\n    }\n    \n    // If aiResponse is a string, clean it up\n    if (typeof aiResponse === 'string') {\n      // Remove markdown code block wrappers if present\n      aiResponse = aiResponse.trim();\n      if (aiResponse.startsWith('```json')) {\n        aiResponse = aiResponse.replace(/^```json\\s*/, '').replace(/\\s*```$/, '');\n      } else if (aiResponse.startsWith('```')) {\n        aiResponse = aiResponse.replace(/^```\\s*/, '').replace(/\\s*```$/, '');\n      }\n      \n      // Parse the cleaned JSON string\n      analysis = JSON.parse(aiResponse);\n    } else if (aiResponse && typeof aiResponse === 'object') {\n      analysis = aiResponse;\n    } else {\n      throw new Error('Could not extract AI response');\n    }\n  } catch (error) {\n    // Fallback if parsing fails - default to escalation for safety\n    analysis = {\n      category: 'General_Inquiry',\n      sentiment: 'Neutral',\n      urgency: 'High',\n      complexity: 'Complex',\n      key_issues: ['Unable to parse - manual review needed'],\n      customer_emotion: 'Unknown',\n      requires_escalation: true,\n      escalation_reason: 'AI analysis parsing failed - requires manual review: ' + error.message,\n      suggested_priority: 2,\n      brief_summary: emailData.subject || 'Email requires manual review'\n    };\n  }\n  \n  // Determine routing decision with explicit logic\n  const shouldEscalate = \n    analysis.requires_escalation === true ||\n    analysis.sentiment === 'Negative' ||\n    analysis.urgency === 'Urgent' ||\n    analysis.urgency === 'High' ||\n    analysis.complexity === 'Complex' ||\n    analysis.category === 'Complaint';\n  \n  // Map category to ticket type\n  const ticketTypeMap = {\n    'Billing': 'question',\n    'Technical': 'incident',\n    'Feature_Request': 'task',\n    'General_Inquiry': 'question',\n    'Complaint': 'problem'\n  };\n  \n  // Map urgency to priority\n  const priorityMap = {\n    'Low': 'low',\n    'Medium': 'normal',\n    'High': 'high',\n    'Urgent': 'urgent'\n  };\n  \n  // Generate tags\n  const tags = [\n    `category-${(analysis.category || 'unknown').toLowerCase().replace('_', '-')}`,\n    `sentiment-${(analysis.sentiment || 'unknown').toLowerCase()}`,\n    `urgency-${(analysis.urgency || 'unknown').toLowerCase()}`,\n    'ai-processed'\n  ];\n  \n  if (shouldEscalate) {\n    tags.push('escalated');\n  }\n  \n  results.push({\n    json: {\n      ...emailData,\n      analysis: {\n        category: analysis.category,\n        sentiment: analysis.sentiment,\n        urgency: analysis.urgency,\n        complexity: analysis.complexity,\n        key_issues: analysis.key_issues || [],\n        customer_emotion: analysis.customer_emotion,\n        brief_summary: analysis.brief_summary,\n        escalation_reason: analysis.escalation_reason\n      },\n      routing: {\n        should_escalate: shouldEscalate,\n        route: shouldEscalate ? 'escalate' : 'auto_respond'\n      },\n      zendesk: {\n        ticket_type: ticketTypeMap[analysis.category] || 'question',\n        priority: priorityMap[analysis.urgency] || 'normal',\n        tags: tags,\n        suggested_priority: analysis.suggested_priority || 3\n      }\n    }\n  });\n}\n\nreturn results;\n"
+      },
+      "id": "f15d5305-6122-4bb2-9077-a8514208be4f",
+      "name": "Parse & Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -848,
+        1248
+      ],
+      "notes": "Parses AI response, applies escalation logic, and prepares Zendesk field mapping."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.routing.should_escalate }}",
+                    "rightValue": true,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "false"
+                    },
+                    "id": "40bfc97c-9226-47c4-b494-59875e509b1d"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Auto-Respond"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.routing.should_escalate }}",
+                    "rightValue": true,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true"
+                    },
+                    "id": "343f5c3b-e6e8-40a4-bde7-35d07b5fef29"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Escalate"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "657ec0ab-033d-4c00-9307-49af2993a7c4",
+      "name": "Route Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -544,
+        1328
+      ],
+      "notes": "Routes to auto-respond or escalation path based on analysis. Defaults to escalation if uncertain."
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a friendly, professional customer support representative for Obsidian Electronics. Generate a helpful email response to the customer's inquiry.\n\nGuidelines:\n- Be warm, empathetic, and professional\n- Address the customer by name when available\n- Directly address their specific question or concern\n- **USE THE PROVIDED COMPANY INFORMATION** from the knowledge base to give accurate, specific answers\n- Cite specific policies, pricing, or procedures when relevant\n- Provide clear, actionable information\n- Keep the response concise but complete (150-300 words)\n- Include relevant links or resources if applicable\n- End with an offer for further assistance\n- Sign off as 'The [Company Name] Support Team'\n\nDo NOT:\n- Make up information not provided in the knowledge base\n- Make promises you cannot keep\n- Contradict the company policies provided\n- Use overly formal or robotic language\n- Ignore any part of their question\n\nFormat the response as a professional email body (no subject line needed)."
+            },
+            {
+              "content": "=Generate a response to this customer inquiry:\n\n---\nCustomer Name: {{ $json.sender_name }}\nCategory: {{ $json.analysis.category }}\nSentiment: {{ $json.analysis.sentiment }}\nKey Issues: {{ $json.analysis.key_issues.join(', ') }}\nSummary: {{ $json.analysis.brief_summary }}\n\nOriginal Message:\nSubject: {{ $json.subject }}\n\n{{ $json.body }}\n---\n{{ $json.knowledge_context }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 800,
+          "temperature": 0.7
+        }
+      },
+      "id": "ba1bd45d-8db3-4b05-b30e-ad83e5331adc",
+      "name": "Generate Auto-Response",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        16,
+        1600
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "zAeOD8wpMdfSxQVE",
+          "name": "OpenAi account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Generates personalized, helpful response for simple inquiries."
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $('Extract Email Data').first().json.email_id }}",
+        "message": "={{ $json.output[0].content[0].text.replace(/\\n/g, '<br>') }}",
+        "options": {}
+      },
+      "id": "e6ccefe0-38a9-457d-8a2f-890d1c4f97f0",
+      "name": "Send Auto-Reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        272,
+        1376
+      ],
+      "webhookId": "f342e2b2-6610-4623-8f04-10d41344964c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "M2bUyP47VQYCuDiQ",
+          "name": "Gmail account 2"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Sends the AI-generated response as a reply to the original email thread."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0A9L5STYBY",
+          "mode": "list",
+          "cachedResultName": "support-escalations"
+        },
+        "text": "=:rotating_light: *ESCALATED SUPPORT REQUEST* :rotating_light:\n\n:bust_in_silhouette: *Customer:* {{ $json.sender_name }}\n:email: *Email:* {{ $json.sender_email }}\n:envelope: *Subject:* {{ $json.subject }}\n:clock1: *Received:* {{ $json.received_at }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n:brain: *AI Analysis*\n• *Category:* {{ $json.analysis.category }}\n• *Sentiment:* {{ $json.analysis.sentiment === 'Negative' ? ':red_circle: Negative' : ($json.analysis.sentiment === 'Neutral' ? ':yellow_circle: Neutral' : ':green_circle: Positive') }}\n• *Urgency:* {{ $json.analysis.urgency === 'Urgent' ? ':fire: URGENT' : ($json.analysis.urgency === 'High' ? ':warning: High' : $json.analysis.urgency) }}\n• *Complexity:* {{ $json.analysis.complexity }}\n• *Customer Emotion:* {{ $json.analysis.customer_emotion }}\n\n:mag: *Key Issues:*\n{{ $json.analysis.key_issues.map(issue => '• ' + issue).join('\\n') }}\n\n:clipboard: *Summary:*\n{{ $json.analysis.brief_summary }}\n\n:exclamation: *Escalation Reason:*\n{{ $json.analysis.escalation_reason || 'Met automatic escalation criteria' }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n:page_facing_up: *Original Message:*\n```\n{{ $json.body.substring(0, 500) }}{{ $json.body.length > 500 ? '...' : '' }}\n```\n\n:label: *Tags:* {{ $json.zendesk.tags.join(', ') }}\n:arrow_up: *Priority:* {{ $json.zendesk.suggested_priority }}/5\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n:point_right: *Action Required:* Please respond to this customer directly via email at {{ $json.sender_email }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "357ccf49-05d3-4c0a-8fbb-4946d0ab9970",
+      "name": "Escalate to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -608,
+        1712
+      ],
+      "webhookId": "1f19cbc5-670e-4968-9807-3d7ca8a9ee25",
+      "credentials": {
+        "slackApi": {
+          "id": "VcryPHfHYRvFT1R1",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Sends detailed escalation to Slack channel with full AI analysis and customer details for human follow-up."
+    },
+    {
+      "parameters": {},
+      "id": "2d62ee9d-c8be-4c98-a98a-1aa089af2221",
+      "name": "Auto-Respond Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        432,
+        1184
+      ],
+      "notes": "Marks successful auto-response completion."
+    },
+    {
+      "parameters": {},
+      "id": "0ba0735b-f4da-4203-b02b-df6da39a33e1",
+      "name": "Escalation Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -368,
+        1728
+      ],
+      "notes": "Marks successful escalation completion."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle OpenAI classification error - create fallback data for escalation\nconst results = [];\n\nfor (const item of $input.all()) {\n  // Try to get original email data from earlier node\n  let emailData;\n  try {\n    emailData = $('Extract Email Data').first().json;\n  } catch (e) {\n    emailData = {\n      email_id: 'unknown',\n      thread_id: 'unknown',\n      sender_email: 'unknown@example.com',\n      sender_name: 'Unknown Customer',\n      subject: 'Email Classification Failed',\n      body: 'Original email content could not be retrieved.',\n      received_at: new Date().toISOString()\n    };\n  }\n  \n  // Get error details if available\n  const errorMessage = item.json.error?.message || item.json.message || 'OpenAI classification failed';\n  \n  results.push({\n    json: {\n      // Original email data\n      ...emailData,\n      \n      // Fallback AI Analysis for escalation\n      analysis: {\n        category: 'General_Inquiry',\n        sentiment: 'Neutral',\n        urgency: 'High',\n        complexity: 'Complex',\n        key_issues: ['AI classification failed - manual review required'],\n        customer_emotion: 'Unknown - requires manual assessment',\n        brief_summary: `Classification error: ${errorMessage}. Original subject: ${emailData.subject}`,\n        escalation_reason: `AI classification failed: ${errorMessage}`\n      },\n      \n      // Force escalation\n      routing: {\n        should_escalate: true,\n        route: 'escalate'\n      },\n      \n      // Zendesk mapping for error case\n      zendesk: {\n        ticket_type: 'incident',\n        priority: 'high',\n        tags: ['ai-error', 'manual-review-required', 'classification-failed'],\n        suggested_priority: 2\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "e0fb022b-f7f7-4e20-9374-d75bd335ef27",
+      "name": "Handle Classification Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -992,
+        1616
+      ],
+      "notes": "Handles OpenAI classification failures by creating fallback data that forces escalation for manual review."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1CDOh5R2NNEQLaB2SDOMuSX-b_a9ihnoCdhlSbLDfNjE",
+          "mode": "list",
+          "cachedResultName": "Support FAQ - ObsidianSoftCo",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1CDOh5R2NNEQLaB2SDOMuSX-b_a9ihnoCdhlSbLDfNjE/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1896149223,
+          "mode": "list",
+          "cachedResultName": "support-knowledge-base",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1CDOh5R2NNEQLaB2SDOMuSX-b_a9ihnoCdhlSbLDfNjE/edit#gid=1896149223"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Category",
+              "lookupValue": "={{ $json.analysis.category }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "de465dd4-98dd-446f-b346-fc79a7082ef9",
+      "name": "Lookup Knowledge Base",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -240,
+        1376
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "WZ3LRoPTwrdK3lBq",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Retrieves relevant FAQs and policies from Google Sheets based on email category. Falls back gracefully if lookup fails."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge email data with retrieved knowledge base context\nconst emailData = $('Route Decision').first().json;\nconst kbResults = $('Lookup Knowledge Base').all();\n\n// Build context from knowledge base results\nlet knowledgeContext = '';\n\nif (kbResults && kbResults.length > 0) {\n  const relevantArticles = kbResults.map(item => {\n    const kb = item.json;\n    return `**${kb.Question || kb.Title || 'FAQ'}**\\n${kb.Answer || kb.Content || kb.Response || ''}`;\n  }).filter(article => article.length > 10);\n  \n  if (relevantArticles.length > 0) {\n    knowledgeContext = `\\n\\n## Relevant Company Information\\nUse the following information to provide accurate answers:\\n\\n${relevantArticles.slice(0, 5).join('\\n\\n---\\n\\n')}`;\n  }\n}\n\n// If no knowledge found, add a note\nif (!knowledgeContext) {\n  knowledgeContext = '\\n\\n## Note\\nNo specific knowledge base articles found for this category. Provide a general helpful response and offer to connect the customer with a specialist if needed.';\n}\n\nreturn [{\n  json: {\n    ...emailData,\n    knowledge_context: knowledgeContext,\n    kb_articles_found: kbResults ? kbResults.length : 0\n  }\n}];"
+      },
+      "id": "f035221f-9850-447e-9b7c-70c274f51381",
+      "name": "Merge Knowledge Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -32,
+        1296
+      ],
+      "notes": "Combines email data with retrieved knowledge base articles to provide context for response generation."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Email Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Email Data": {
+      "main": [
+        [
+          {
+            "node": "Classify & Analyze Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify & Analyze Email": {
+      "main": [
+        [
+          {
+            "node": "Parse & Route",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Classification Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Classification Error": {
+      "main": [
+        [
+          {
+            "node": "Escalate to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Route": {
+      "main": [
+        [
+          {
+            "node": "Route Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Decision": {
+      "main": [
+        [
+          {
+            "node": "Lookup Knowledge Base",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalate to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalate to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Knowledge Base": {
+      "main": [
+        [
+          {
+            "node": "Merge Knowledge Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Knowledge Context": {
+      "main": [
+        [
+          {
+            "node": "Generate Auto-Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Auto-Response": {
+      "main": [
+        [
+          {
+            "node": "Send Auto-Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Auto-Reply": {
+      "main": [
+        [
+          {
+            "node": "Auto-Respond Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalate to Slack": {
+      "main": [
+        [
+          {
+            "node": "Escalation Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "cd390667-af3b-44c6-9f7f-376638d6aec6",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cdbd5e6b804232fb1bf0bb600685e5ec8ff083e89d497d383358696debb42511"
+  },
+  "id": "rKiLpXqBK32HIt8sCDcD4",
+  "tags": [
+    {
+      "updatedAt": "2026-01-19T03:29:12.443Z",
+      "createdAt": "2026-01-19T03:29:12.443Z",
+      "id": "51smu0qpxjaWsSkw",
+      "name": "Portfolio"
+    },
+    {
+      "updatedAt": "2026-01-18T07:33:17.727Z",
+      "createdAt": "2026-01-18T07:33:17.727Z",
+      "id": "6vjHYxeOjo5ha919",
+      "name": "AI"
+    },
+    {
+      "updatedAt": "2026-01-18T07:33:17.731Z",
+      "createdAt": "2026-01-18T07:33:17.731Z",
+      "id": "Y0rxiFl9ZgbQudGF",
+      "name": "Customer Support"
+    }
+  ]
+}
